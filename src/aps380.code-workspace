@@ -1,0 +1,18 @@
+{
+	"folders": [
+		{
+			"name": "aps380",
+			"path": "../../../../../Formula/VD_sim/aps380"
+		},
+		{
+			"name": "APS380 EIS",
+			"path": ".."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"fsl_pwm.h": "c",
+			"fsl_compat.h": "c"
+		}
+	}
+}
