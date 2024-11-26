@@ -2,6 +2,12 @@
 #include <eFlexPwm.h>
 #include <Arduino.h>
 #include <SPI.h>
+#include <MCP320x.h>
+#include <pinDrivers.h>
+
+#include <arm_math.h>
+#include <math.h>
+#include <util/atomic.h>
 
 using namespace eFlex;
 
@@ -15,44 +21,126 @@ Timer &Tm2 = Sm20.timer();
 uint8_t dutyCyclePercent = 0; // the duty cycle in %
 const uint32_t PwmFreq = 18000; // FPwm 18kHz
 
+
+// ADC object
+MCP320x adc(HW_pins[HW_PIN_CS].pinNum, HW_pins[HW_PIN_MOSI].pinNum, HW_pins[HW_PIN_MISO].pinNum, HW_pins[HW_PIN_SCK].pinNum);
+
+
+const float32_t MidDutyCycle = 32768; // middle duty cycle value
+const float32_t SineFreqMin = 5.0;    // min sine frequency
+const float32_t SineFreqMax = 50.0;   // max sine frequency
+const float32_t SineFreqStep = 5.0;   // sine frequency step 
+const float32_t DeadTimeNs = 50.0;    // deadtime in nanoseconds
+const uint32_t StepDelay = 5000;      // Increments sineFreq by SineFreqStep every StepDelay ms.
+
+float32_t pwmFreq = 10000.0; // PWM frequency in hz
+float32_t sineFreq = SineFreqMax / 2; // Sine Frequency in Hz
+
+// Interrupt Input Variables
+volatile uint32_t vSample;
+volatile float32_t vSpeed;
+
+// My eFlexPWM submodules (Hardware > PWM2: SM[0], SM[2])
+SubModule Sm42 (2, 3);
+
+Timer &Tm2 = Sm42.timer();
+
+
+void IsrOverflowSm20() {
+  float32_t s;
+
+  // The Teensy's LED is lit during the interrupt routine in order to be able to measure its execution time.
+  digitalWriteFast (LED_BUILTIN, HIGH);
+  
+  s = roundf ( (MidDutyCycle - 1) * arm_sin_f32 (vSpeed * ++vSample));
+
+  Sm20.updateDutyCycle (static_cast<uint16_t> (MidDutyCycle + s));
+  Sm22.updateDutyCycle (static_cast<uint16_t> (MidDutyCycle - s));
+
+  Sm20.clearStatusFlags (kPWM_CompareVal1Flag);
+  Tm2.setPwmLdok();
+
+  digitalWriteFast (LED_BUILTIN, LOW);
+}
+
+void updateSpeed() {
+
+  float32_t s = 2.0 * PI * (sineFreq / pwmFreq);
+  ATOMIC_BLOCK (ATOMIC_RESTORESTATE) {
+    vSpeed = s;
+  }
+}
+
+
 void setup() {
 
+  pinMode (LED_BUILTIN, OUTPUT);
+
+  digitalWrite (LED_BUILTIN, HIGH);
+  while (!Serial)
+    ; // wait for serial port to connect.
+  Serial.println ("eFlexPwm Single Phase Inverter Example");    
+
   Config myConfig;
+
   myConfig.setReloadLogic (kPWM_ReloadPwmFullCycle);
+  /* PWM A & PWM B form a complementary PWM pair */
   myConfig.setPairOperation (kPWM_ComplementaryPwmA);
-  myConfig.setPwmFreqHz (PwmFreq); 
+  myConfig.setPwmFreqHz (pwmFreq);
 
-  // Initialize submodule
-  Sm20.configure (myConfig);
+  /* Initialize submodule 0 */
+  if (Sm42.configure (myConfig) != true) {
+    Serial.println ("Submodule 0 initialization failed");
+    exit (EXIT_FAILURE);
+  }
 
-  // Initialize submodule 2, make it use same counter clock as submodule 0. 
-  myConfig.setClockSource (kPWM_Submodule0Clock);
-  myConfig.setPrescale (kPWM_Prescale_Divide_1);
-  myConfig.setInitializationControl (kPWM_Initialize_MasterSync);
+  uint16_t deadTimeVal = ( (uint64_t) Tm2.srcClockHz() * DeadTimeNs) / 1000000000;
+  Tm2.setupDeadtime (deadTimeVal);
 
-  Sm22.configure (myConfig);
-  Sm23.configure (myConfig);
-  Tm2.setupDeadtime (500); // deatime 500ns
   // synchronize registers and start all submodules
-  Tm2.begin();
+  if (Tm2.begin() != true) {
+    Serial.println ("Failed to start submodules");
+    exit (EXIT_FAILURE);
+  }
+  else {
+
+    Serial.println ("Submodules successfuly started");
+    // Sm20.printRegs(); // to see the values of the VALx registers
+  }
+
+  updateSpeed();
+
+  // Enable counter overflow interrupt (VAL1)
+  Sm42.enableInterrupts (kPWM_CompareVal1InterruptEnable);
+  attachInterruptVector (IRQ_FLEXPWM2_0, &IsrOverflowSm20);
+  NVIC_ENABLE_IRQ (IRQ_FLEXPWM2_0);
+
+  // end of PWM setup
+  digitalWrite (LED_BUILTIN, LOW);
+
+  HW_setupPins();
 }
 
 void loop() {
-  dutyCyclePercent += 5;
 
-  // Update duty cycles for all 3 PWM signals
-  Sm20.updateDutyCyclePercent (dutyCyclePercent, ChanA);
-  Sm22.updateDutyCyclePercent (dutyCyclePercent >> 1, ChanA);
-  Sm23.updateDutyCyclePercent (dutyCyclePercent >> 2, ChanA);
 
-  // Set the load okay bit for all submodules to load registers from their buffer
-  Tm2.setPwmLdok();
 
-  if (dutyCyclePercent >= 100) {
-    
-    dutyCyclePercent = 5;
-  }
+//Measure current and voltage
 
-  // Delay at least 100 PWM periods
-  delayMicroseconds ( (1000000U / PwmFreq) * 100);
+    uint16_t raw_current = adc.readChannel(0);
+    uint16_t raw_voltage = adc.readChannel(1);
+
+    float current = (raw_current * 3.3 / 4095) * 5; // 5A/V
+    float voltage = raw_voltage * 3.3 / 4095;
+
+
+    Serial.printf ("Fs=%.1f\n", sineFreq);
+    delay (StepDelay);
+    sineFreq += SineFreqStep;
+
+    if (sineFreq > SineFreqMax) {
+
+      sineFreq = SineFreqMin;
+    }
+    updateSpeed();
 }

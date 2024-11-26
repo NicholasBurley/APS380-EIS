@@ -16,21 +16,21 @@ HW_pin_S HW_pins[PIN_COUNT] = {
         .physicalState = false,
     },
 
-    [HW_PIN_MOSI] = { //input
+    [HW_PIN_MOSI] = { //output
         .pinNum = 26,
         .isOutput = true,
         .activeLow = false,
         .physicalState = false,
     },
 
-    [HW_PIN_SCK] = { //input
+    [HW_PIN_SCK] = { //output
         .pinNum = 27,
         .isOutput = true,
         .activeLow = false,
         .physicalState = false,
     },
 
-    [HW_PIN_CS] = { //input 
+    [HW_PIN_CS] = { //output 
         .pinNum = 38,
         .isOutput = true,
         .activeLow = false,
