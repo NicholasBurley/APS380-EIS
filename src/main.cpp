@@ -43,7 +43,6 @@ volatile float32_t vSpeed;
 // My eFlexPWM submodules (Hardware > PWM2: SM[0], SM[2])
 SubModule Sm42 (2, 3);
 
-Timer &Tm2 = Sm42.timer();
 
 
 void IsrOverflowSm20() {
